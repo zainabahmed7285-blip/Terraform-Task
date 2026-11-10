@@ -1,6 +1,6 @@
-# Terraform AWS Infrastructure: 5 EC2, 1 VPC, 3 Subnets, 1 S3 Bucket
+# Terraform AWS Infrastructure: 5 EC2, 1 VPC, 3 Subnets, 2 S3 Buckets
 
-This repository provisions complete AWS infrastructure with high availability and secure best practices.
+This repository provisions complete AWS infrastructure with high availability, security best practices, and standard tags.
 
 ## Architecture Overview
 
@@ -9,15 +9,18 @@ This repository provisions complete AWS infrastructure with high availability an
 - **Internet Gateway & Route Tables**: Attached to the VPC with routing for public internet access.
 - **Security Group**: Allows inbound ports `22` (SSH) and `80` (HTTP), and unrestricted outbound traffic.
 - **5 EC2 Instances**:
-  - Running latest Amazon Linux 2023.
-  - Automatically distributed across the 3 subnets (`count.index % 3`).
-  - Bootstrapped with an Apache HTTP server serving instance metadata and S3 reference.
-  - Secured with an IAM role granting read/write access to the application S3 bucket.
+  - Running official Ubuntu 22.04 LTS (Canonical).
+  - Round-robin distributed across the 3 subnets (`count.index % 3`).
+  - Bootstrapped with an Apache HTTP server (`apache2`) showing instance details and both S3 bucket names.
+  - IAM profile granting read/write access to both S3 buckets.
 - **SSH Key Pair**: Automatically generated 4096-bit RSA key saved locally as `ec2_key.pem`.
-- **1 S3 Bucket**: 
-  - Unique name generated with a random 4-byte hex suffix.
-  - Public Access Block strictly enabled.
-  - Server-side AES-256 encryption enabled by default.
+- **2 S3 Buckets**:
+  - `aws_s3_bucket.app_bucket`: Primary storage for application data.
+  - `aws_s3_bucket.backup_bucket`: Secondary storage for backups and logs.
+  - Both protected with default server-side AES-256 encryption and public access blocks.
+- **Consistent Tagging**:
+  - Provider-level `default_tags` (`Environment`, `Project`, `ManagedBy`).
+  - Resource-specific tags (`Name`, `Role`, `Tier`, `Purpose`, `AZ`).
 
 ---
 
@@ -46,15 +49,14 @@ terraform apply -auto-approve
 
 ### 5. Accessing Your Instances
 After deployment, Terraform outputs:
-- Web URLs: Click any URL (`http://<EC2_IP>`) to see the server test page.
+- Web URLs: Click any URL (`http://<EC2_IP>`) to see the server test page listing both S3 buckets.
 - SSH Commands:
   ```bash
-  ssh -i ec2_key.pem ec2-user@<EC2_PUBLIC_IP>
+  ssh -i ec2_key.pem ubuntu@<EC2_PUBLIC_IP>
   ```
-- S3 Bucket Name: Verified through IAM permissions from within the EC2 instances (`aws s3 ls s3://<BUCKET_NAME>`).
+- S3 Bucket Names: Verified through IAM permissions directly from the EC2 instances (`aws s3 ls s3://<BUCKET_NAME>`).
 
 ### 6. Cleanup
 ```bash
 terraform destroy
 ```
-

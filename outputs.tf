@@ -24,16 +24,31 @@ output "ec2_web_urls" {
 }
 
 output "ssh_commands" {
-  description = "SSH connection commands for each EC2 instance"
-  value       = [for ip in aws_instance.app_servers[*].public_ip : "ssh -i ec2_key.pem ec2-user@${ip}"]
+  description = "SSH connection commands for each Ubuntu EC2 instance"
+  value       = [for ip in aws_instance.app_servers[*].public_ip : "ssh -i ec2_key.pem ubuntu@${ip}"]
 }
 
-output "s3_bucket_name" {
-  description = "Name of the created S3 bucket"
+output "s3_app_bucket_name" {
+  description = "Name of the primary application S3 bucket"
   value       = aws_s3_bucket.app_bucket.id
 }
 
-output "s3_bucket_arn" {
-  description = "ARN of the created S3 bucket"
+output "s3_app_bucket_arn" {
+  description = "ARN of the primary application S3 bucket"
   value       = aws_s3_bucket.app_bucket.arn
+}
+
+output "s3_backup_bucket_name" {
+  description = "Name of the secondary backup/logs S3 bucket"
+  value       = aws_s3_bucket.backup_bucket.id
+}
+
+output "s3_backup_bucket_arn" {
+  description = "ARN of the secondary backup/logs S3 bucket"
+  value       = aws_s3_bucket.backup_bucket.arn
+}
+
+output "all_s3_buckets" {
+  description = "List of all created S3 bucket names"
+  value       = [aws_s3_bucket.app_bucket.id, aws_s3_bucket.backup_bucket.id]
 }

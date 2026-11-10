@@ -22,6 +22,14 @@ terraform {
 
 provider "aws" {
   region = var.aws_region
+
+  default_tags {
+    tags = {
+      Environment = var.environment
+      Project     = "Infrastructure-Automation"
+      ManagedBy   = "Terraform"
+    }
+  }
 }
 
 # -----------------------------------------------------------------------------
@@ -31,14 +39,14 @@ data "aws_availability_zones" "available" {
   state = "available"
 }
 
-# Latest Amazon Linux 2023 AMI
-data "aws_ami" "amazon_linux_2023" {
+# Latest Ubuntu 22.04 LTS AMI (Canonical)
+data "aws_ami" "ubuntu" {
   most_recent = true
-  owners      = ["amazon"]
+  owners      = ["099720109477"] # Canonical
 
   filter {
     name   = "name"
-    values = ["al2023-ami-2023.*-x86_64"]
+    values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]
   }
 
   filter {
@@ -58,6 +66,11 @@ resource "tls_private_key" "ssh_key" {
 resource "aws_key_pair" "generated_key" {
   key_name   = "${var.s3_bucket_prefix}-key"
   public_key = tls_private_key.ssh_key.public_key_openssh
+
+  tags = {
+    Name = "${var.s3_bucket_prefix}-key"
+    Role = "Admin-Access"
+  }
 }
 
 resource "local_file" "private_key_pem" {
@@ -76,6 +89,7 @@ resource "aws_vpc" "main" {
 
   tags = {
     Name = "main-vpc"
+    Role = "Network-Core"
   }
 }
 
@@ -84,6 +98,7 @@ resource "aws_internet_gateway" "gw" {
 
   tags = {
     Name = "main-igw"
+    Role = "Network-Gateway"
   }
 }
 
@@ -97,6 +112,8 @@ resource "aws_subnet" "subnets" {
 
   tags = {
     Name = "subnet-${count.index + 1}"
+    Tier = "Public"
+    AZ   = data.aws_availability_zones.available.names[count.index]
   }
 }
 
@@ -110,6 +127,7 @@ resource "aws_route_table" "public" {
 
   tags = {
     Name = "public-route-table"
+    Role = "Routing"
   }
 }
 
@@ -153,21 +171,25 @@ resource "aws_security_group" "web_sg" {
 
   tags = {
     Name = "main-web-sg"
+    Role = "Network-Security"
   }
 }
 
 # -----------------------------------------------------------------------------
-# S3 Bucket
+# S3 Buckets (2 Buckets: Application & Backup/Logs)
 # -----------------------------------------------------------------------------
 resource "random_id" "bucket_suffix" {
   byte_length = 4
 }
 
+# S3 Bucket 1: Primary Application Storage
 resource "aws_s3_bucket" "app_bucket" {
   bucket = "${var.s3_bucket_prefix}-${random_id.bucket_suffix.hex}"
 
   tags = {
-    Name = "Application Storage"
+    Name    = "Application Storage"
+    Tier    = "Storage"
+    Purpose = "Primary-Application-Data"
   }
 }
 
@@ -190,8 +212,38 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "app_bucket_encryp
   }
 }
 
+# S3 Bucket 2: Secondary Backup and Logs Storage
+resource "aws_s3_bucket" "backup_bucket" {
+  bucket = "${var.s3_backup_bucket_prefix}-${random_id.bucket_suffix.hex}"
+
+  tags = {
+    Name    = "Backup & Logs Storage"
+    Tier    = "Storage"
+    Purpose = "Secondary-Backups-and-Logs"
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "backup_bucket_pab" {
+  bucket = aws_s3_bucket.backup_bucket.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "backup_bucket_encryption" {
+  bucket = aws_s3_bucket.backup_bucket.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
 # -----------------------------------------------------------------------------
-# IAM Role & Instance Profile for EC2 to S3 Access
+# IAM Role & Instance Profile for EC2 to S3 Access (both buckets)
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "ec2_s3_role" {
   name = "ec2-s3-access-role"
@@ -208,11 +260,16 @@ resource "aws_iam_role" "ec2_s3_role" {
       }
     ]
   })
+
+  tags = {
+    Name = "ec2-s3-access-role"
+    Role = "Security-IAM"
+  }
 }
 
 resource "aws_iam_policy" "s3_access_policy" {
   name        = "ec2-s3-rw-policy"
-  description = "Allows EC2 instances read/write access to the application S3 bucket"
+  description = "Allows EC2 instances read/write access to both application and backup S3 buckets"
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -226,11 +283,18 @@ resource "aws_iam_policy" "s3_access_policy" {
         Effect = "Allow"
         Resource = [
           aws_s3_bucket.app_bucket.arn,
-          "${aws_s3_bucket.app_bucket.arn}/*"
+          "${aws_s3_bucket.app_bucket.arn}/*",
+          aws_s3_bucket.backup_bucket.arn,
+          "${aws_s3_bucket.backup_bucket.arn}/*"
         ]
       }
     ]
   })
+
+  tags = {
+    Name = "ec2-s3-rw-policy"
+    Role = "Security-IAM"
+  }
 }
 
 resource "aws_iam_role_policy_attachment" "s3_attach" {
@@ -241,14 +305,19 @@ resource "aws_iam_role_policy_attachment" "s3_attach" {
 resource "aws_iam_instance_profile" "ec2_profile" {
   name = "ec2-s3-instance-profile"
   role = aws_iam_role.ec2_s3_role.name
+
+  tags = {
+    Name = "ec2-s3-instance-profile"
+    Role = "Security-IAM"
+  }
 }
 
 # -----------------------------------------------------------------------------
-# EC2 Instances (5 instances distributed across the 3 subnets)
+# EC2 Instances (5 Ubuntu instances distributed across the 3 subnets)
 # -----------------------------------------------------------------------------
 resource "aws_instance" "app_servers" {
   count                  = var.instance_count
-  ami                    = data.aws_ami.amazon_linux_2023.id
+  ami                    = data.aws_ami.ubuntu.id
   instance_type          = var.instance_type
   subnet_id              = aws_subnet.subnets[count.index % length(aws_subnet.subnets)].id
   vpc_security_group_ids = [aws_security_group.web_sg.id]
@@ -257,18 +326,33 @@ resource "aws_instance" "app_servers" {
 
   user_data = <<-EOF
               #!/bin/bash
-              dnf update -y
-              dnf install -y httpd
-              systemctl start httpd
-              systemctl enable httpd
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update -y
+              apt-get install -y apache2 curl
+              systemctl start apache2
+              systemctl enable apache2
               TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
               INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
               AZ=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/availability-zone)
-              echo "<h1>Server: Instance $INSTANCE_ID ($AZ)</h1><p>Provisioned by Terraform with S3 bucket: ${aws_s3_bucket.app_bucket.id}</p>" > /var/www/html/index.html
+              cat <<HTML > /var/www/html/index.html
+              <html>
+              <head><title>App Server</title></head>
+              <body>
+                <h1>Server: Instance $INSTANCE_ID ($AZ)</h1>
+                <p>OS: Ubuntu 22.04 LTS | Provisioned by Terraform</p>
+                <ul>
+                  <li>Primary S3 Bucket: ${aws_s3_bucket.app_bucket.id}</li>
+                  <li>Backup S3 Bucket: ${aws_s3_bucket.backup_bucket.id}</li>
+                </ul>
+              </body>
+              </html>
+              HTML
               EOF
 
   tags = {
-    Name = "app-server-${count.index + 1}"
+    Name = "ubuntu-app-server-${count.index + 1}"
+    Role = "Compute"
+    Tier = "Application"
+    OS   = "Ubuntu-22.04"
   }
 }
-
