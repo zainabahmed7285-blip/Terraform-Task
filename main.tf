@@ -9,6 +9,14 @@ terraform {
       source  = "hashicorp/random"
       version = "~> 3.5"
     }
+    tls = {
+      source  = "hashicorp/tls"
+      version = "~> 4.0"
+    }
+    local = {
+      source  = "hashicorp/local"
+      version = "~> 2.4"
+    }
   }
 }
 
@@ -37,6 +45,25 @@ data "aws_ami" "amazon_linux_2023" {
     name   = "virtualization-type"
     values = ["hvm"]
   }
+}
+
+# -----------------------------------------------------------------------------
+# SSH Key Pair Generation
+# -----------------------------------------------------------------------------
+resource "tls_private_key" "ssh_key" {
+  algorithm = "RSA"
+  rsa_bits  = 4096
+}
+
+resource "aws_key_pair" "generated_key" {
+  key_name   = "${var.s3_bucket_prefix}-key"
+  public_key = tls_private_key.ssh_key.public_key_openssh
+}
+
+resource "local_file" "private_key_pem" {
+  content         = tls_private_key.ssh_key.private_key_pem
+  filename        = "${path.module}/ec2_key.pem"
+  file_permission = "0400"
 }
 
 # -----------------------------------------------------------------------------
@@ -130,21 +157,6 @@ resource "aws_security_group" "web_sg" {
 }
 
 # -----------------------------------------------------------------------------
-# EC2 Instances (5 instances distributed across the 3 subnets)
-# -----------------------------------------------------------------------------
-resource "aws_instance" "app_servers" {
-  count                  = var.instance_count
-  ami                    = data.aws_ami.amazon_linux_2023.id
-  instance_type          = var.instance_type
-  subnet_id              = aws_subnet.subnets[count.index % length(aws_subnet.subnets)].id
-  vpc_security_group_ids = [aws_security_group.web_sg.id]
-
-  tags = {
-    Name = "app-server-${count.index + 1}"
-  }
-}
-
-# -----------------------------------------------------------------------------
 # S3 Bucket
 # -----------------------------------------------------------------------------
 resource "random_id" "bucket_suffix" {
@@ -175,6 +187,88 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "app_bucket_encryp
     apply_server_side_encryption_by_default {
       sse_algorithm = "AES256"
     }
+  }
+}
+
+# -----------------------------------------------------------------------------
+# IAM Role & Instance Profile for EC2 to S3 Access
+# -----------------------------------------------------------------------------
+resource "aws_iam_role" "ec2_s3_role" {
+  name = "ec2-s3-access-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "ec2.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_policy" "s3_access_policy" {
+  name        = "ec2-s3-rw-policy"
+  description = "Allows EC2 instances read/write access to the application S3 bucket"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:ListBucket"
+        ]
+        Effect = "Allow"
+        Resource = [
+          aws_s3_bucket.app_bucket.arn,
+          "${aws_s3_bucket.app_bucket.arn}/*"
+        ]
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "s3_attach" {
+  role       = aws_iam_role.ec2_s3_role.name
+  policy_arn = aws_iam_policy.s3_access_policy.arn
+}
+
+resource "aws_iam_instance_profile" "ec2_profile" {
+  name = "ec2-s3-instance-profile"
+  role = aws_iam_role.ec2_s3_role.name
+}
+
+# -----------------------------------------------------------------------------
+# EC2 Instances (5 instances distributed across the 3 subnets)
+# -----------------------------------------------------------------------------
+resource "aws_instance" "app_servers" {
+  count                  = var.instance_count
+  ami                    = data.aws_ami.amazon_linux_2023.id
+  instance_type          = var.instance_type
+  subnet_id              = aws_subnet.subnets[count.index % length(aws_subnet.subnets)].id
+  vpc_security_group_ids = [aws_security_group.web_sg.id]
+  key_name               = aws_key_pair.generated_key.key_name
+  iam_instance_profile   = aws_iam_instance_profile.ec2_profile.name
+
+  user_data = <<-EOF
+              #!/bin/bash
+              dnf update -y
+              dnf install -y httpd
+              systemctl start httpd
+              systemctl enable httpd
+              TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+              INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
+              AZ=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/availability-zone)
+              echo "<h1>Server: Instance $INSTANCE_ID ($AZ)</h1><p>Provisioned by Terraform with S3 bucket: ${aws_s3_bucket.app_bucket.id}</p>" > /var/www/html/index.html
+              EOF
+
+  tags = {
+    Name = "app-server-${count.index + 1}"
   }
 }
 

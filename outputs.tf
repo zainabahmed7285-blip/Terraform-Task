@@ -18,6 +18,16 @@ output "ec2_public_ips" {
   value       = aws_instance.app_servers[*].public_ip
 }
 
+output "ec2_web_urls" {
+  description = "HTTP URLs to test web servers on EC2 instances"
+  value       = [for ip in aws_instance.app_servers[*].public_ip : "http://${ip}"]
+}
+
+output "ssh_commands" {
+  description = "SSH connection commands for each EC2 instance"
+  value       = [for ip in aws_instance.app_servers[*].public_ip : "ssh -i ec2_key.pem ec2-user@${ip}"]
+}
+
 output "s3_bucket_name" {
   description = "Name of the created S3 bucket"
   value       = aws_s3_bucket.app_bucket.id
@@ -27,4 +37,3 @@ output "s3_bucket_arn" {
   description = "ARN of the created S3 bucket"
   value       = aws_s3_bucket.app_bucket.arn
 }
-

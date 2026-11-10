@@ -4,6 +4,12 @@ variable "aws_region" {
   default     = "us-east-1"
 }
 
+variable "environment" {
+  description = "Environment name used in tags"
+  type        = string
+  default     = "dev"
+}
+
 variable "vpc_cidr" {
   description = "CIDR block for the VPC"
   type        = string
@@ -29,8 +35,13 @@ variable "instance_count" {
 }
 
 variable "s3_bucket_prefix" {
-  description = "Prefix for the S3 bucket name (will be appended with a unique string)"
+  description = "Prefix for the primary S3 bucket name"
   type        = string
-  default     = "my-terraform-bucket"
+  default     = "my-terraform-app-bucket"
 }
 
+variable "s3_backup_bucket_prefix" {
+  description = "Prefix for the secondary (backup/logs) S3 bucket name"
+  type        = string
+  default     = "my-terraform-backup-bucket"
+}
