@@ -1,6 +1,6 @@
-# Terraform AWS Infrastructure: 5 EC2, 1 VPC, 3 Subnets, 2 S3 Buckets
+# Terraform AWS Infrastructure: 5 EC2, 1 VPC, 3 Subnets, 1 S3 Bucket
 
-This repository provisions complete AWS infrastructure with high availability, security best practices, and standard tags.
+This repository provisions complete AWS infrastructure with high availability and secure best practices.
 
 ## Architecture Overview
 
@@ -11,16 +11,13 @@ This repository provisions complete AWS infrastructure with high availability, s
 - **5 EC2 Instances**:
   - Running official Ubuntu 22.04 LTS (Canonical).
   - Round-robin distributed across the 3 subnets (`count.index % 3`).
-  - Bootstrapped with an Apache HTTP server (`apache2`) showing instance details and both S3 bucket names.
-  - IAM profile granting read/write access to both S3 buckets.
-- **SSH Key Pair**: Automatically generated 4096-bit RSA key saved locally as `ec2_key.pem`.
-- **2 S3 Buckets**:
-  - `aws_s3_bucket.app_bucket`: Primary storage for application data.
-  - `aws_s3_bucket.backup_bucket`: Secondary storage for backups and logs.
-  - Both protected with default server-side AES-256 encryption and public access blocks.
-- **Consistent Tagging**:
-  - Provider-level `default_tags` (`Environment`, `Project`, `ManagedBy`).
-  - Resource-specific tags (`Name`, `Role`, `Tier`, `Purpose`, `AZ`).
+  - Bootstrapped with an Apache HTTP server (`apache2`) showing instance details and the S3 bucket name.
+- **1 S3 Bucket**:
+  - Unique name generated with a random 4-byte hex suffix.
+  - Public Access Block strictly enabled.
+  - Server-side AES-256 encryption enabled by default.
+- **Tagging**:
+  - All tag values use only plain English letters, numbers, spaces, and the characters `_ . : / = + - @`.
 
 ---
 
@@ -49,12 +46,8 @@ terraform apply -auto-approve
 
 ### 5. Accessing Your Instances
 After deployment, Terraform outputs:
-- Web URLs: Click any URL (`http://<EC2_IP>`) to see the server test page listing both S3 buckets.
-- SSH Commands:
-  ```bash
-  ssh -i ec2_key.pem ubuntu@<EC2_PUBLIC_IP>
-  ```
-- S3 Bucket Names: Verified through IAM permissions directly from the EC2 instances (`aws s3 ls s3://<BUCKET_NAME>`).
+- Web URLs: Click any URL (`http://<EC2_IP>`) to see the server test page.
+- S3 Bucket Name: The created S3 bucket ID and ARN.
 
 ### 6. Cleanup
 ```bash

@@ -35,13 +35,7 @@ variable "instance_count" {
 }
 
 variable "s3_bucket_prefix" {
-  description = "Prefix for the primary S3 bucket name"
+  description = "Prefix for the S3 bucket name"
   type        = string
   default     = "my-terraform-app-bucket"
-}
-
-variable "s3_backup_bucket_prefix" {
-  description = "Prefix for the secondary (backup/logs) S3 bucket name"
-  type        = string
-  default     = "my-terraform-backup-bucket"
 }

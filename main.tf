@@ -9,14 +9,6 @@ terraform {
       source  = "hashicorp/random"
       version = "~> 3.5"
     }
-    tls = {
-      source  = "hashicorp/tls"
-      version = "~> 4.0"
-    }
-    local = {
-      source  = "hashicorp/local"
-      version = "~> 2.4"
-    }
   }
 }
 
@@ -42,7 +34,7 @@ data "aws_availability_zones" "available" {
 # Latest Ubuntu 22.04 LTS AMI (Canonical)
 data "aws_ami" "ubuntu" {
   most_recent = true
-  owners      = ["099720109477"] # Canonical
+  owners      = ["099720109477"]
 
   filter {
     name   = "name"
@@ -56,31 +48,7 @@ data "aws_ami" "ubuntu" {
 }
 
 # -----------------------------------------------------------------------------
-# SSH Key Pair Generation
-# -----------------------------------------------------------------------------
-resource "tls_private_key" "ssh_key" {
-  algorithm = "RSA"
-  rsa_bits  = 4096
-}
-
-resource "aws_key_pair" "generated_key" {
-  key_name   = "${var.s3_bucket_prefix}-key"
-  public_key = tls_private_key.ssh_key.public_key_openssh
-
-  tags = {
-    Name = "${var.s3_bucket_prefix}-key"
-    Role = "Admin-Access"
-  }
-}
-
-resource "local_file" "private_key_pem" {
-  content         = tls_private_key.ssh_key.private_key_pem
-  filename        = "${path.module}/ec2_key.pem"
-  file_permission = "0400"
-}
-
-# -----------------------------------------------------------------------------
-# VPC and Networking
+# VPC and Networking (1 VPC, 3 Subnets)
 # -----------------------------------------------------------------------------
 resource "aws_vpc" "main" {
   cidr_block           = var.vpc_cidr
@@ -102,7 +70,6 @@ resource "aws_internet_gateway" "gw" {
   }
 }
 
-# 3 Subnets across available AZs
 resource "aws_subnet" "subnets" {
   count                   = 3
   vpc_id                  = aws_vpc.main.id
@@ -176,13 +143,12 @@ resource "aws_security_group" "web_sg" {
 }
 
 # -----------------------------------------------------------------------------
-# S3 Buckets (2 Buckets: Application & Backup/Logs)
+# 1 S3 Bucket
 # -----------------------------------------------------------------------------
 resource "random_id" "bucket_suffix" {
   byte_length = 4
 }
 
-# S3 Bucket 1: Primary Application Storage
 resource "aws_s3_bucket" "app_bucket" {
   bucket = "${var.s3_bucket_prefix}-${random_id.bucket_suffix.hex}"
 
@@ -212,108 +178,8 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "app_bucket_encryp
   }
 }
 
-# S3 Bucket 2: Secondary Backup and Logs Storage
-resource "aws_s3_bucket" "backup_bucket" {
-  bucket = "${var.s3_backup_bucket_prefix}-${random_id.bucket_suffix.hex}"
-
-  tags = {
-    Name    = "Backup & Logs Storage"
-    Tier    = "Storage"
-    Purpose = "Secondary-Backups-and-Logs"
-  }
-}
-
-resource "aws_s3_bucket_public_access_block" "backup_bucket_pab" {
-  bucket = aws_s3_bucket.backup_bucket.id
-
-  block_public_acls       = true
-  block_public_policy     = true
-  ignore_public_acls      = true
-  restrict_public_buckets = true
-}
-
-resource "aws_s3_bucket_server_side_encryption_configuration" "backup_bucket_encryption" {
-  bucket = aws_s3_bucket.backup_bucket.id
-
-  rule {
-    apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
-    }
-  }
-}
-
 # -----------------------------------------------------------------------------
-# IAM Role & Instance Profile for EC2 to S3 Access (both buckets)
-# -----------------------------------------------------------------------------
-resource "aws_iam_role" "ec2_s3_role" {
-  name = "ec2-s3-access-role"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Action = "sts:AssumeRole"
-        Effect = "Allow"
-        Principal = {
-          Service = "ec2.amazonaws.com"
-        }
-      }
-    ]
-  })
-
-  tags = {
-    Name = "ec2-s3-access-role"
-    Role = "Security-IAM"
-  }
-}
-
-resource "aws_iam_policy" "s3_access_policy" {
-  name        = "ec2-s3-rw-policy"
-  description = "Allows EC2 instances read/write access to both application and backup S3 buckets"
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Action = [
-          "s3:GetObject",
-          "s3:PutObject",
-          "s3:ListBucket"
-        ]
-        Effect = "Allow"
-        Resource = [
-          aws_s3_bucket.app_bucket.arn,
-          "${aws_s3_bucket.app_bucket.arn}/*",
-          aws_s3_bucket.backup_bucket.arn,
-          "${aws_s3_bucket.backup_bucket.arn}/*"
-        ]
-      }
-    ]
-  })
-
-  tags = {
-    Name = "ec2-s3-rw-policy"
-    Role = "Security-IAM"
-  }
-}
-
-resource "aws_iam_role_policy_attachment" "s3_attach" {
-  role       = aws_iam_role.ec2_s3_role.name
-  policy_arn = aws_iam_policy.s3_access_policy.arn
-}
-
-resource "aws_iam_instance_profile" "ec2_profile" {
-  name = "ec2-s3-instance-profile"
-  role = aws_iam_role.ec2_s3_role.name
-
-  tags = {
-    Name = "ec2-s3-instance-profile"
-    Role = "Security-IAM"
-  }
-}
-
-# -----------------------------------------------------------------------------
-# EC2 Instances (5 Ubuntu instances distributed across the 3 subnets)
+# 5 EC2 Instances (distributed across the 3 subnets)
 # -----------------------------------------------------------------------------
 resource "aws_instance" "app_servers" {
   count                  = var.instance_count
@@ -321,8 +187,6 @@ resource "aws_instance" "app_servers" {
   instance_type          = var.instance_type
   subnet_id              = aws_subnet.subnets[count.index % length(aws_subnet.subnets)].id
   vpc_security_group_ids = [aws_security_group.web_sg.id]
-  key_name               = aws_key_pair.generated_key.key_name
-  iam_instance_profile   = aws_iam_instance_profile.ec2_profile.name
 
   user_data = <<-EOF
               #!/bin/bash
@@ -340,10 +204,7 @@ resource "aws_instance" "app_servers" {
               <body>
                 <h1>Server: Instance $INSTANCE_ID ($AZ)</h1>
                 <p>OS: Ubuntu 22.04 LTS | Provisioned by Terraform</p>
-                <ul>
-                  <li>Primary S3 Bucket: ${aws_s3_bucket.app_bucket.id}</li>
-                  <li>Backup S3 Bucket: ${aws_s3_bucket.backup_bucket.id}</li>
-                </ul>
+                <p>S3 Bucket: ${aws_s3_bucket.app_bucket.id}</p>
               </body>
               </html>
               HTML
